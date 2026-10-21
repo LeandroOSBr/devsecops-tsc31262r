@@ -1,0 +1,42 @@
+name: "🛡️ Esteira DevSecOps - Validação Git & Terraform (Quality Gate)"
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  validar-pratica:
+    name: "Validar Código & IaC (Shift Left)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "1. Baixar código do repositório (Checkout)"
+        uses: actions/checkout@v4
+
+      - name: "2. Verificar arquivos do Mural da Turma"
+        run: |
+          echo "📋 Participantes registrados no Mural da Turma:"
+          ls -la 01-pratica-git/mural-da-turma/
+
+      - name: "3. Configurar Terraform"
+        uses: hashicorp/setup-terraform@v3
+
+      - name: "4. Quality Gate IaC: Verificar formatação Terraform (terraform fmt)"
+        working-directory: 02-pratica-terraform-iac/aws-ec2-demo
+        run: terraform fmt -check
+
+      - name: "5. Quality Gate IaC: Inicializar e Validar sintaxe (terraform validate)"
+        working-directory: 02-pratica-terraform-iac/aws-ec2-demo
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: "6. Quality Gate Security Scan (Trivy IaC Misconfiguration Check)"
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: '02-pratica-terraform-iac/aws-ec2-demo'
+          format: 'table'
+          exit-code: '0' # Em modo educativo exibe alertas sem bloquear; mude para '1' para bloquear vulnerabilidades CRITICAL!
+          severity: 'HIGH,CRITICAL'
