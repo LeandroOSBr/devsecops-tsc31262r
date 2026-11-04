@@ -1,0 +1,5 @@
+10035	IGNORE	(Strict-Transport-Security Header Not Set - laboratorio sem HTTPS)
+10049	IGNORE	(Non Storable Content - informativo)
+10027	WARN	(Information Disclosure - Suspicious Comments)
+10038	WARN	(Content Security Policy Header Not Set)
+10098	WARN	(Cross-Domain Misconfiguration - CORS)

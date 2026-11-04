@@ -1,0 +1,525 @@
+# ==============================================================================
+# Disciplina: Ambiente de Desenvolvimento e Operação - DevSecOps (IPOG)
+# Professor: Leandro de Oliveira Santos
+# Prática 03: Esteira DevSecOps completa para o OWASP Juice Shop
+#
+#  ┌──────────────┐  ┌─────────┐  ┌───────────────┐  ┌──────────────────────┐
+#  │ 1. Segredos  │  │ 2. SAST │  │ 3. IaC        │  │ 4. Build + SCA/      │
+#  │   Gitleaks   │  │ Semgrep │  │ Terraform     │  │    Container (Trivy) │
+#  └──────┬───────┘  └────┬────┘  │ Trivy+Checkov │  │    + SBOM            │
+#         │               │       └──────┬────────┘  └──────────┬───────────┘
+#         └───────────────┴──────┬───────┴──────────────────────┘
+#                                ▼
+#                   ┌──────────────────────────┐
+#                   │ 5. QUALITY GATE (política)│
+#                   └────────────┬─────────────┘
+#                                ▼
+#                   ┌──────────────────────────┐
+#                   │ 6. Deploy efêmero + DAST │  (Juice Shop no runner + OWASP ZAP)
+#                   └────────────┬─────────────┘
+#                                ▼
+#        ┌──────────────────────────────┐   ┌───────────────────────────────┐
+#        │ 7. Publica imagem no GHCR    │   │ 8. Deploy GCP com Terraform   │
+#        │    (somente branch main)     │   │    (manual + aprovação)       │
+#        └──────────────────────────────┘   └───────────────────────────────┘
+#
+# SEGURANÇA DA PRÓPRIA ESTEIRA: todas as Actions de terceiros estão fixadas
+# pelo HASH do commit (imutável), e não pela tag (mutável). Em março/2026 as
+# tags do aquasecurity/trivy-action foram sobrescritas por atacantes
+# (CVE-2026-33634) e quem usava "@tag" executou um ladrão de credenciais.
+# ==============================================================================
+name: "🧃 Esteira DevSecOps - Juice Shop (Aula 03)"
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "03-pratica-pipeline-devsecops/**"
+      - ".github/workflows/devsecops-juice-shop.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "03-pratica-pipeline-devsecops/**"
+      - ".github/workflows/devsecops-juice-shop.yml"
+  workflow_dispatch:
+    inputs:
+      tipo_dast:
+        description: "Tipo de varredura DAST (baseline ~5 min | full ~30 min, ataques ativos)"
+        type: choice
+        options: [baseline, full]
+        default: baseline
+      acao_gcp:
+        description: "Deploy no GCP com Terraform (requer secrets/variables configurados)"
+        type: choice
+        options: [nenhuma, plan, apply, destroy]
+        default: nenhuma
+
+# Menor privilégio: cada job pede somente o que precisa
+permissions:
+  contents: read
+
+concurrency:
+  group: devsecops-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LAB_DIR: 03-pratica-pipeline-devsecops
+  JUICE_SHOP_VERSION: v20.3.0
+  IMAGE_NAME: juice-shop-lab
+  SEMGREP_VERSION: "1.183.0"
+  GITLEAKS_VERSION: "8.30.1"
+  TRIVY_VERSION: "v0.76.1"
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # 1. SECRET SCANNING - procura senhas, tokens e chaves no código e no histórico
+  # ----------------------------------------------------------------------------
+  segredos:
+    name: "1. Secret Scanning (Gitleaks)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: "Checkout do repositório da turma (histórico completo)"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: "Checkout do código-fonte do Juice Shop ${{ env.JUICE_SHOP_VERSION }}"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: juice-shop/juice-shop
+          ref: ${{ env.JUICE_SHOP_VERSION }}
+          path: juice-shop-src
+          persist-credentials: false
+
+      - name: "Instalar Gitleaks (com verificação de checksum SHA-256)"
+        run: |
+          V="${GITLEAKS_VERSION}"
+          BASE="https://github.com/gitleaks/gitleaks/releases/download/v${V}"
+          curl -sSLO "${BASE}/gitleaks_${V}_linux_x64.tar.gz"
+          curl -sSLO "${BASE}/gitleaks_${V}_checksums.txt"
+          sha256sum --check --ignore-missing "gitleaks_${V}_checksums.txt"
+          tar -xzf "gitleaks_${V}_linux_x64.tar.gz" gitleaks
+          ./gitleaks version
+
+      - name: "Varredura: histórico Git do repositório da turma"
+        run: |
+          mkdir -p relatorios
+          ./gitleaks git . --redact --no-banner --exit-code 0 \
+            --report-format sarif --report-path relatorios/gitleaks-repo.sarif
+
+      - name: "Varredura: código-fonte do Juice Shop"
+        run: |
+          ./gitleaks dir juice-shop-src --redact --no-banner --exit-code 0 \
+            --report-format sarif --report-path relatorios/gitleaks-juice-shop.sarif
+
+      - name: "Publicar no GitHub Security (Code Scanning)"
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        continue-on-error: true
+        with:
+          sarif_file: relatorios/gitleaks-repo.sarif
+          category: gitleaks
+
+      - name: "Guardar relatórios"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relatorio-segredos
+          path: relatorios/
+
+  # ----------------------------------------------------------------------------
+  # 2. SAST - análise estática do código-fonte (sem executar a aplicação)
+  # ----------------------------------------------------------------------------
+  sast:
+    name: "2. SAST (Semgrep)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: "Checkout do repositório da turma"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Checkout do código-fonte do Juice Shop ${{ env.JUICE_SHOP_VERSION }}"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: juice-shop/juice-shop
+          ref: ${{ env.JUICE_SHOP_VERSION }}
+          path: juice-shop-src
+          persist-credentials: false
+
+      - name: "Instalar Semgrep ${{ env.SEMGREP_VERSION }}"
+        run: pipx install "semgrep==${SEMGREP_VERSION}"
+
+      - name: "Executar SAST (regras OWASP Top 10 + JavaScript/TypeScript)"
+        run: |
+          mkdir -p relatorios
+          semgrep scan \
+            --config p/owasp-top-ten \
+            --config p/javascript \
+            --config p/typescript \
+            --exclude test --exclude cypress \
+            --metrics off \
+            --sarif --output relatorios/semgrep.sarif \
+            juice-shop-src
+          echo "Achados SAST: $(jq '[.runs[].results[]] | length' relatorios/semgrep.sarif)"
+
+      - name: "Publicar no GitHub Security (Code Scanning)"
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        continue-on-error: true
+        with:
+          sarif_file: relatorios/semgrep.sarif
+          category: semgrep
+
+      - name: "Guardar relatórios"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relatorio-sast
+          path: relatorios/
+
+  # ----------------------------------------------------------------------------
+  # 3. IaC - qualidade e segurança do Terraform e do Dockerfile
+  # ----------------------------------------------------------------------------
+  iac:
+    name: "3. IaC (Terraform + Trivy + Checkov)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Configurar Terraform"
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+
+      - name: "Preparar pasta de relatórios"
+        run: mkdir -p relatorios
+
+      - name: "terraform fmt -check (padronização)"
+        working-directory: ${{ env.LAB_DIR }}/infra
+        run: terraform fmt -check -recursive -diff
+
+      - name: "terraform init + validate (sintaxe e consistência)"
+        working-directory: ${{ env.LAB_DIR }}/infra
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: "Trivy config - relatório SARIF"
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: config
+          scan-ref: ${{ env.LAB_DIR }}
+          format: sarif
+          output: relatorios/trivy-iac.sarif
+          exit-code: "0"
+
+      - name: "Trivy config - tabela no log"
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          scan-type: config
+          scan-ref: ${{ env.LAB_DIR }}
+          format: table
+          exit-code: "0"
+
+      - name: "Checkov (segunda opinião sobre o mesmo código)"
+        uses: bridgecrewio/checkov-action@45edc9d8856b664db2ec251f5f8632361f0a67aa # v12.3139.0
+        with:
+          directory: ${{ env.LAB_DIR }}
+          framework: terraform,dockerfile
+          output_format: cli,sarif
+          output_file_path: console,relatorios/checkov.sarif
+          soft_fail: true
+          quiet: true
+
+      - name: "Publicar no GitHub Security (Code Scanning)"
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        continue-on-error: true
+        with:
+          sarif_file: relatorios/trivy-iac.sarif
+          category: trivy-iac
+
+      - name: "Guardar relatórios"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relatorio-iac
+          path: relatorios/
+
+  # ----------------------------------------------------------------------------
+  # 4. BUILD + SCA/CONTAINER SCAN + SBOM
+  # ----------------------------------------------------------------------------
+  build-container:
+    name: "4. Build + SCA/Container (Trivy) + SBOM"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Preparar pasta de relatórios"
+        run: mkdir -p relatorios
+
+      - name: "Build da imagem (tag = hash do commit, rastreável)"
+        run: |
+          docker build \
+            --build-arg JUICE_SHOP_VERSION="${JUICE_SHOP_VERSION}" \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg SOURCE_REPO="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            -t "${IMAGE_NAME}:${GITHUB_SHA}" \
+            "${LAB_DIR}/app"
+          docker image ls "${IMAGE_NAME}"
+
+      - name: "SCA + Container: vulnerabilidades (SARIF)"
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: sarif
+          output: relatorios/trivy-image.sarif
+          exit-code: "0"
+
+      - name: "SCA + Container: tabela HIGH/CRITICAL no log"
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: "SBOM (CycloneDX) - inventário de componentes da imagem"
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-setup-trivy: true
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: cyclonedx
+          output: relatorios/sbom-juice-shop.cdx.json
+
+      - name: "Publicar no GitHub Security (Code Scanning)"
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        continue-on-error: true
+        with:
+          sarif_file: relatorios/trivy-image.sarif
+          category: trivy-image
+
+      - name: "Exportar a imagem EXATA que foi analisada"
+        run: docker save "${IMAGE_NAME}:${GITHUB_SHA}" | gzip > imagem.tar.gz
+
+      - name: "Guardar imagem"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: imagem-juice-shop
+          path: imagem.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+      - name: "Guardar relatórios"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relatorio-container
+          path: relatorios/
+
+  # ----------------------------------------------------------------------------
+  # 5. QUALITY GATE - decide, pela política, se o deploy pode acontecer
+  # ----------------------------------------------------------------------------
+  quality-gate:
+    name: "5. 🚦 Quality Gate"
+    needs: [segredos, sast, iac, build-container]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Baixar relatórios dos scanners"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: relatorio-*
+          path: relatorios
+          merge-multiple: true
+
+      - name: "Avaliar política (seguranca/politica-quality-gate.json)"
+        run: |
+          python3 "${LAB_DIR}/seguranca/quality_gate.py" \
+            --politica "${LAB_DIR}/seguranca/politica-quality-gate.json" \
+            --relatorios relatorios \
+            --categorias segredos_repo,segredos_app,sast,iac,iac_checkov,container
+
+  # ----------------------------------------------------------------------------
+  # 6. DEPLOY EFÊMERO (staging no próprio runner) + DAST com OWASP ZAP
+  # ----------------------------------------------------------------------------
+  dast:
+    name: "6. Deploy efêmero + DAST (OWASP ZAP)"
+    needs: quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Baixar a imagem aprovada no Quality Gate"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: imagem-juice-shop
+
+      - name: "Deploy: subir o Juice Shop (container com privilégios mínimos)"
+        run: |
+          docker load < imagem.tar.gz
+          docker run -d --name juice-shop -p 3000:3000 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            "${IMAGE_NAME}:${GITHUB_SHA}"
+
+      - name: "Smoke test: aguardar a aplicação responder"
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/rest/admin/application-version; then
+              echo; echo "✅ Juice Shop no ar (tentativa $i)"; exit 0
+            fi
+            sleep 5
+          done
+          echo "❌ Aplicação não respondeu"; docker logs juice-shop; exit 1
+
+      - name: "DAST: ZAP Baseline (varredura passiva)"
+        if: ${{ github.event.inputs.tipo_dast != 'full' }}
+        uses: zaproxy/action-baseline@de8ad967d3548d44ef623df22cf95c3b0baf8b25 # v0.15.0
+        with:
+          target: "http://localhost:3000"
+          rules_file_name: "${{ env.LAB_DIR }}/seguranca/zap-rules.tsv"
+          cmd_options: "-a"
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: relatorio-dast-zap
+
+      - name: "DAST: ZAP Full Scan (ataques ativos - somente em ambiente de teste!)"
+        if: ${{ github.event.inputs.tipo_dast == 'full' }}
+        uses: zaproxy/action-full-scan@3c58388149901b9a03b7718852c5ba889646c27c # v0.13.0
+        with:
+          target: "http://localhost:3000"
+          rules_file_name: "${{ env.LAB_DIR }}/seguranca/zap-rules.tsv"
+          cmd_options: "-a -m 5"
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: relatorio-dast-zap
+
+      - name: "Quality Gate do DAST"
+        run: |
+          python3 "${LAB_DIR}/seguranca/quality_gate.py" \
+            --politica "${LAB_DIR}/seguranca/politica-quality-gate.json" \
+            --relatorios . \
+            --categorias dast
+
+      - name: "Logs da aplicação (em caso de falha)"
+        if: failure()
+        run: docker logs juice-shop || true
+
+  # ----------------------------------------------------------------------------
+  # 7. PUBLICAR a imagem aprovada no registry (GitHub Container Registry)
+  # ----------------------------------------------------------------------------
+  publicar-imagem:
+    name: "7. Publicar imagem no GHCR"
+    needs: dast
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: "Baixar a imagem aprovada"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: imagem-juice-shop
+
+      - name: "Login, tag e push (versão = commit + latest)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          DESTINO="ghcr.io/${OWNER}/${IMAGE_NAME}"
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker load < imagem.tar.gz
+          docker tag "${IMAGE_NAME}:${GITHUB_SHA}" "${DESTINO}:${GITHUB_SHA}"
+          docker tag "${IMAGE_NAME}:${GITHUB_SHA}" "${DESTINO}:latest"
+          docker push "${DESTINO}:${GITHUB_SHA}"
+          docker push "${DESTINO}:latest"
+          echo "### 📦 Imagem publicada: \`${DESTINO}:${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ----------------------------------------------------------------------------
+  # 8. DEPLOY NO GCP com Terraform (manual, protegido por Environment)
+  #    Pré-requisitos (Settings > Secrets and variables > Actions):
+  #      secret   GCP_SA_KEY        JSON da Service Account de deploy
+  #      variable GCP_PROJECT_ID    ID do projeto GCP
+  #      variable TF_STATE_BUCKET   bucket GCS para o terraform.tfstate
+  #      variable GCP_ALLOWED_CIDR  CIDR liberado na porta 3000 (ex.: 200.1.2.3/32)
+  # ----------------------------------------------------------------------------
+  deploy-gcp:
+    name: "8. Deploy GCP (Terraform ${{ github.event.inputs.acao_gcp }})"
+    needs: dast
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.acao_gcp != 'nenhuma'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: producao-gcp
+    defaults:
+      run:
+        working-directory: ${{ env.LAB_DIR }}/infra
+    env:
+      ACAO: ${{ github.event.inputs.acao_gcp }}
+      TF_IN_AUTOMATION: "true"
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_allowed_source_ranges: '["${{ vars.GCP_ALLOWED_CIDR }}"]'
+      TF_VAR_container_image: ${{ vars.JUICE_SHOP_IMAGE || 'bkimminich/juice-shop:v20.3.0' }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Autenticar no Google Cloud"
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: "Configurar Terraform"
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: "terraform init (estado remoto no GCS)"
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=juice-shop/tsc31262r"
+
+      - name: "terraform plan"
+        run: |
+          if [ "${ACAO}" = "destroy" ]; then
+            terraform plan -destroy -input=false -out=tfplan
+          else
+            terraform plan -input=false -out=tfplan
+          fi
+
+      - name: "terraform apply (executa exatamente o plano revisado)"
+        if: env.ACAO == 'apply' || env.ACAO == 'destroy'
+        run: terraform apply -input=false tfplan
+
+      - name: "URL do ambiente"
+        if: env.ACAO == 'apply'
+        run: |
+          URL="$(terraform output -raw juice_shop_url)"
+          echo "### 🧃 Juice Shop no GCP: ${URL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "(aguarde ~2 minutos para o startup-script instalar o Docker e subir o container)" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,82 @@
+{
+  "_comentario": "Politica de Quality Gate da esteira. modo 'bloqueio' reprova a esteira quando os limites sao excedidos; modo 'relatorio' apenas registra (risco aceito). Limites = quantidade MAXIMA permitida de achados por severidade.",
+  "categorias": {
+    "segredos_repo": {
+      "titulo": "Segredos no repositório da turma (Gitleaks)",
+      "arquivos": [
+        "gitleaks-repo.sarif"
+      ],
+      "severidade_padrao": "high",
+      "modo": "bloqueio",
+      "limites": {
+        "critical": 0,
+        "high": 0
+      }
+    },
+    "segredos_app": {
+      "titulo": "Segredos no código do Juice Shop (Gitleaks)",
+      "arquivos": [
+        "gitleaks-juice-shop.sarif"
+      ],
+      "severidade_padrao": "high",
+      "modo": "relatorio",
+      "limites": {
+        "critical": 0,
+        "high": 0
+      }
+    },
+    "sast": {
+      "titulo": "SAST (Semgrep)",
+      "arquivos": [
+        "semgrep.sarif"
+      ],
+      "modo": "relatorio",
+      "limites": {
+        "critical": 0,
+        "high": 0
+      }
+    },
+    "iac": {
+      "titulo": "IaC - Terraform/Dockerfile (Trivy config)",
+      "arquivos": [
+        "trivy-iac.sarif"
+      ],
+      "modo": "bloqueio",
+      "limites": {
+        "critical": 0,
+        "high": 0
+      }
+    },
+    "iac_checkov": {
+      "titulo": "IaC - segunda opiniao (Checkov)",
+      "arquivos": [
+        "checkov*.sarif"
+      ],
+      "modo": "relatorio",
+      "limites": {
+        "critical": 0,
+        "high": 0
+      }
+    },
+    "container": {
+      "titulo": "SCA + Container (Trivy image)",
+      "arquivos": [
+        "trivy-image.sarif"
+      ],
+      "modo": "relatorio",
+      "limites": {
+        "critical": 0
+      }
+    },
+    "dast": {
+      "titulo": "DAST (OWASP ZAP)",
+      "arquivos": [
+        "report_json.json"
+      ],
+      "modo": "relatorio",
+      "limites": {
+        "high": 0
+      }
+    }
+  }
+}

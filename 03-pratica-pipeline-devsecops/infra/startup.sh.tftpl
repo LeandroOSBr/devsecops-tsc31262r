@@ -1,0 +1,22 @@
+#!/bin/bash
+# Script executado pela VM no boot (gerado pelo Terraform via templatefile)
+set -euo pipefail
+
+if ! command -v docker >/dev/null 2>&1; then
+  apt-get update -y
+  apt-get install -y docker.io
+  systemctl enable --now docker
+fi
+
+docker rm -f juice-shop >/dev/null 2>&1 || true
+docker pull "${container_image}"
+
+# Container com privilégios mínimos: sem capabilities do kernel, sem escalada
+# de privilégio e com limite de memória.
+docker run -d --name juice-shop \
+  --restart unless-stopped \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  --memory 1g \
+  -p 3000:3000 \
+  "${container_image}"
