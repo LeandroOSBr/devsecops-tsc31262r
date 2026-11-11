@@ -28,18 +28,22 @@
 # tags do aquasecurity/trivy-action foram sobrescritas por atacantes
 # (CVE-2026-33634) e quem usava "@tag" executou um ladrão de credenciais.
 # ==============================================================================
-name: "🧃 Esteira DevSecOps - Juice Shop (Aula 03)"
+name: "🧃 Esteira DevSecOps - Juice Shop (Aulas 03 e 04)"
 
 on:
   push:
     branches: ["**"]
     paths:
       - "03-pratica-pipeline-devsecops/**"
+      - "04-casos-de-uso/**"
+      - ".gitleaksignore"
       - ".github/workflows/devsecops-juice-shop.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "03-pratica-pipeline-devsecops/**"
+      - "04-casos-de-uso/**"
+      - ".gitleaksignore"
       - ".github/workflows/devsecops-juice-shop.yml"
   workflow_dispatch:
     inputs:
@@ -166,6 +170,24 @@ jobs:
             --sarif --output relatorios/semgrep.sarif \
             juice-shop-src
           echo "Achados SAST: $(jq '[.runs[].results[]] | length' relatorios/semgrep.sarif)"
+
+      # Aula 04 (Caso 1): regras PRÓPRIAS da empresa. Cada achado importante vira
+      # uma regra automática para o erro nunca mais voltar.
+      - name: "SAST com regras da empresa (Semgrep custom - Aula 04)"
+        run: |
+          # Se a regra própria tiver erro de sintaxe, a esteira NÃO cai: gera um
+          # SARIF vazio e deixa um aviso visível (corrija a regra!).
+          semgrep scan \
+            --config 04-casos-de-uso/seguranca/semgrep-regras-ipog.yml \
+            --exclude test --exclude cypress --exclude data/static/codefixes \
+            --metrics off \
+            --sarif --output relatorios/semgrep-ipog.sarif \
+            juice-shop-src || echo "::warning::Semgrep (regras da empresa) terminou com erro - verifique a regra"
+          if [ ! -s relatorios/semgrep-ipog.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > relatorios/semgrep-ipog.sarif
+          fi
+          echo "Achados (regras da empresa): $(jq '[.runs[].results[]] | length' relatorios/semgrep-ipog.sarif)"
+          jq -r '.runs[].results[] | "  - \(.ruleId)  \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)"' relatorios/semgrep-ipog.sarif
 
       - name: "Publicar no GitHub Security (Code Scanning)"
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
@@ -359,7 +381,16 @@ jobs:
           python3 "${LAB_DIR}/seguranca/quality_gate.py" \
             --politica "${LAB_DIR}/seguranca/politica-quality-gate.json" \
             --relatorios relatorios \
-            --categorias segredos_repo,segredos_app,sast,iac,iac_checkov,container
+            --categorias segredos_repo,segredos_app,sast,sast_empresa,iac,iac_checkov,container \
+            --detalhado relatorios/achados-detalhados.md
+
+      - name: "Guardar relatório detalhado (arquivo:linha de cada achado)"
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: achados-detalhados
+          path: relatorios/achados-detalhados.md
+          if-no-files-found: ignore
 
   # ----------------------------------------------------------------------------
   # 6. DEPLOY EFÊMERO (staging no próprio runner) + DAST com OWASP ZAP
@@ -422,7 +453,16 @@ jobs:
           python3 "${LAB_DIR}/seguranca/quality_gate.py" \
             --politica "${LAB_DIR}/seguranca/politica-quality-gate.json" \
             --relatorios . \
-            --categorias dast
+            --categorias dast \
+            --detalhado achados-detalhados-dast.md
+
+      - name: "Guardar relatório detalhado do DAST"
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: achados-detalhados-dast
+          path: achados-detalhados-dast.md
+          if-no-files-found: ignore
 
       - name: "Logs da aplicação (em caso de falha)"
         if: failure()

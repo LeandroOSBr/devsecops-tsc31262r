@@ -41,6 +41,17 @@ def severidade_por_level(level):
     return {"error": "high", "warning": "medium", "note": "low"}.get(level or "", "info")
 
 
+def local_sarif(res):
+    """Retorna 'arquivo:linha' do primeiro local do achado (para o dev ir direto ao ponto)."""
+    try:
+        fis = res["locations"][0]["physicalLocation"]
+        uri = fis["artifactLocation"]["uri"]
+        linha = (fis.get("region") or {}).get("startLine")
+        return f"{uri}:{linha}" if linha else uri
+    except (KeyError, IndexError, TypeError):
+        return "-"
+
+
 def ler_sarif(caminho, severidade_padrao=None):
     """Retorna lista de (severidade, regra) para cada resultado do SARIF."""
     with open(caminho, encoding="utf-8") as f:
@@ -66,7 +77,7 @@ def ler_sarif(caminho, severidade_padrao=None):
                 level = res.get("level") or (regra.get("defaultConfiguration") or {}).get("level")
                 sev = severidade_por_level(level)
             nome = (regra.get("shortDescription") or {}).get("text") or regra.get("name") or res.get("ruleId")
-            achados.append((sev, f"{res.get('ruleId')} - {nome}"[:120]))
+            achados.append((sev, f"{res.get('ruleId')} - {nome}"[:120], local_sarif(res)))
     return achados
 
 
@@ -79,7 +90,9 @@ def ler_zap(caminho):
     for site in zap.get("site", []):
         for alerta in site.get("alerts", []):
             sev = mapa.get(str(alerta.get("riskcode")), "info")
-            achados.append((sev, f"{alerta.get('pluginid')} - {alerta.get('name')}"))
+            instancias = alerta.get("instances") or [{}]
+            local = instancias[0].get("uri", "-")
+            achados.append((sev, f"{alerta.get('pluginid')} - {alerta.get('name')}", local))
     return achados
 
 
@@ -88,6 +101,8 @@ def main():
     ap.add_argument("--politica", required=True)
     ap.add_argument("--relatorios", required=True)
     ap.add_argument("--categorias", required=True, help="lista separada por vírgula")
+    ap.add_argument("--detalhado", help="(opcional) gera um relatório Markdown com TODOS os achados "
+                                        "críticos/altos e o arquivo:linha de cada um")
     args = ap.parse_args()
 
     with open(args.politica, encoding="utf-8") as f:
@@ -97,6 +112,9 @@ def main():
               "| Categoria | Modo | " + " | ".join(f"{EMOJI[s]} {s}" for s in SEVERIDADES) + " | Resultado |",
               "|---|---|" + "---|" * len(SEVERIDADES) + "---|"]
     detalhes = []
+    completo = ["# Relatório detalhado de achados críticos/altos", "",
+                "Gerado pelo Quality Gate. Use a coluna **Onde** para ir direto ao arquivo/linha "
+                "(ou à URL, no caso do DAST).", ""]
     reprovado = False
 
     for cat in [c.strip() for c in args.categorias.split(",") if c.strip()]:
@@ -119,7 +137,7 @@ def main():
             else:
                 achados += ler_sarif(arq, cfg.get("severidade_padrao"))
 
-        cont = Counter(sev for sev, _ in achados)
+        cont = Counter(a[0] for a in achados)
         excedidos = [s for s, maximo in cfg["limites"].items() if cont.get(s, 0) > maximo]
 
         if not excedidos:
@@ -133,11 +151,21 @@ def main():
         linhas.append(f"| {cfg['titulo']} | {cfg['modo']} | "
                       + " | ".join(str(cont.get(s, 0)) for s in SEVERIDADES) + f" | {resultado} |")
 
-        top = Counter(regra for sev, regra in achados if sev in ("critical", "high")).most_common(5)
+        graves = sorted((a for a in achados if a[0] in ("critical", "high")),
+                        key=lambda a: (SEVERIDADES.index(a[0]), a[1], a[2]))
+        top = Counter(a[1] for a in graves).most_common(5)
         if top:
             detalhes.append(f"<details><summary><b>{cfg['titulo']}</b> - top achados críticos/altos</summary>\n")
             detalhes += [f"- `{n}x` {r}" for r, n in top]
+            detalhes.append("\n**Onde estão (primeiros 10):**\n")
+            detalhes += [f"- {EMOJI[sev]} `{local}` — {regra}" for sev, regra, local in graves[:10]]
+            if len(graves) > 10:
+                detalhes.append(f"- … e mais {len(graves) - 10} (veja o relatório detalhado nos Artifacts)")
             detalhes.append("\n</details>")
+            completo += [f"## {cfg['titulo']} ({cfg['modo']})", "", "| Severidade | Regra | Onde |", "|---|---|---|"]
+            completo += [f"| {EMOJI[sev]} {sev} | {regra.replace('|', '/')} | `{local}` |"
+                         for sev, regra, local in graves]
+            completo.append("")
 
     linhas.append("")
     linhas.append("**Resultado final:** " + ("⛔ REPROVADO - o deploy NÃO deve seguir." if reprovado
@@ -146,6 +174,10 @@ def main():
     saida = "\n".join(linhas + detalhes) + "\n"
 
     print(saida)
+    if args.detalhado:
+        os.makedirs(os.path.dirname(os.path.abspath(args.detalhado)), exist_ok=True)
+        with open(args.detalhado, "w", encoding="utf-8") as f:
+            f.write("\n".join(completo) + "\n")
     resumo = os.environ.get("GITHUB_STEP_SUMMARY")
     if resumo:
         with open(resumo, "a", encoding="utf-8") as f:

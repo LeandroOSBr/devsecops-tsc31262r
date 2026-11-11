@@ -138,11 +138,15 @@ git checkout -b lab03/ex1-iac-inseguro
 
 ### Exercício 3 — Vazou um segredo! 🔑
 
-1. Crie o arquivo `03-pratica-pipeline-devsecops/config-exemplo.env` com o conteúdo:
+1. Gere o arquivo `03-pratica-pipeline-devsecops/config-exemplo.env` com um token **aleatório** (criado na hora, no seu terminal):
 
-```env
-API_TOKEN = "f3b9c1d27a8e4b6f9c0d1e2a3b4c5d6e7f8a9b0c"
+```bash
+VALOR="$(openssl rand -hex 20)"
+printf 'API_TOKEN = "%s"\n' "$VALOR" > 03-pratica-pipeline-devsecops/config-exemplo.env
+cat 03-pratica-pipeline-devsecops/config-exemplo.env
 ```
+
+> 💡 **Por que não colocamos o token pronto aqui no guia?** Porque na primeira versão deste guia ele estava escrito literalmente… e o Gitleaks bloqueou a esteira da turma inteira (Aula 03). Documentação, README e exemplos também vazam segredos! Veja o **Caso 0** do [Guia da Aula 04](../04-casos-de-uso/GUIA_LAB_AULA04.md).
 
 2. Commit/push → o Gitleaks encontra `generic-api-key` e a categoria **Segredos no repositório da turma** (modo **bloqueio**) reprova a esteira;
 3. Agora **apague** o arquivo, faça commit/push… e observe que a esteira **continua reprovando**. Por quê?

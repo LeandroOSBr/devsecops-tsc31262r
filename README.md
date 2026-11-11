@@ -3,7 +3,7 @@
 Bem-vindos ao repositório prático oficial da disciplina **Ambiente de Desenvolvimento e Operação - DevSecOps** do curso de **Segurança Cibernética do IPOG**!
 
 👨‍🏫 **Professor:** Leandro de Oliveira Santos  
-🎯 **Objetivo deste repositório:** Servir como nosso laboratório vivo e colaborativo para praticarmos **Controle de Versão (Git)**, **Infraestrutura como Código (Terraform)** e **Pipelines CI/CD com Quality Gates de Segurança (DevSecOps)**.
+🎯 **Objetivo deste repositório:** Servir como nosso laboratório vivo e colaborativo para praticarmos **Controle de Versão (Git)**, **Infraestrutura como Código (Terraform)** e **Pipelines CI/CD com Quality Gates de Segurança (DevSecOps)** e **Casos de Uso de Segurança (Modelagem de Ameaças, OWASP Top 10 e API Top 10)**.
 
 ---
 
@@ -32,6 +32,7 @@ cd devsecops-tsc31262r
 | [`01-pratica-git/`](./01-pratica-git/GUIA_PRATICO_AULA02.md) | Guia passo a passo da prática colaborativa de Git (4 áreas do Git, branches, commits, push e Pull Request) + **Mural da Turma**. |
 | [`02-pratica-terraform-iac/`](./02-pratica-terraform-iac/GUIA_TERRAFORM_AULA02.md) | Projetos práticos de **Terraform (IaC)** para AWS (`aws_instance` EC2 Ubuntu `t2.micro` visto na Aula 01) e GCP (VM para o *OWASP Juice Shop*), incluindo boas práticas de segurança. |
 | [`03-pratica-pipeline-devsecops/`](./03-pratica-pipeline-devsecops/GUIA_LAB_AULA03.md) | **Aula 03:** esteira DevSecOps completa com o **OWASP Juice Shop** — Secret Scanning (Gitleaks), SAST (Semgrep), IaC Scan (Terraform + Trivy + Checkov), SCA/Container + SBOM (Trivy), Quality Gate como código, DAST (OWASP ZAP) e deploy no GCP com Terraform. |
+| [`04-casos-de-uso/`](./04-casos-de-uso/GUIA_LAB_AULA04.md) | **Aula 04:** casos de uso reais no Juice Shop com o ciclo *Ameaça (STRIDE) → Exploração → Detecção → Correção → Prevenção*: triagem de segredo (`.gitleaksignore`), SQL Injection + regra Semgrep própria, chave JWT no código + cofre de segredos/OIDC, SBOM na resposta a incidente e BOLA/IDOR com teste de autorização. |
 | [`.github/workflows/`](./.github/workflows/) | Esteiras: [`ci-validacao.yml`](./.github/workflows/ci-validacao.yml) (Aula 02) e [`devsecops-juice-shop.yml`](./.github/workflows/devsecops-juice-shop.yml) (Aula 03). A da Aula 02 é a esteira automatizada (**GitHub Actions**) que é disparada a cada `git push` ou *Pull Request* para validar nossos arquivos e o código Terraform (**Quality Gate**). |
 
 ---

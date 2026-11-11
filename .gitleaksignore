@@ -1,0 +1,16 @@
+# ==============================================================================
+# .gitleaksignore - achados do Gitleaks TRIADOS e ACEITOS (Aula 04 - Caso 0)
+#
+# Formato (modo "gitleaks git"):  <commit>:<arquivo>:<regra>:<linha>
+# O "fingerprint" sai pronto no relatório do Gitleaks (campo Fingerprint no JSON).
+#
+# REGRA DA TURMA: toda linha aqui precisa de justificativa, responsável e data.
+# Só entra aqui o que NÃO é credencial real. Credencial real vazada = REVOGAR e
+# ROTACIONAR (ignorar o alerta não "desvaza" o segredo).
+# ==============================================================================
+
+# Token FICTÍCIO usado como exemplo didático no Exercício 3 do Guia da Aula 03.
+# Não dá acesso a nenhum sistema. Removido do guia no commit da Aula 04, mas
+# continua no histórico do commit 7c9f2bc (por isso o ignore é pelo fingerprint).
+# Responsável: Prof. Leandro Santos | Triado em: 2026-11-11
+7c9f2bcb43316d6115d8fb8cbfcf24d60289317e:03-pratica-pipeline-devsecops/GUIA_LAB_AULA03.md:generic-api-key:144

@@ -1,0 +1,27 @@
+# ==============================================================================
+# Exceções do Trivy com PRAZO DE VALIDADE - Aula 04 (Caso 3)
+#
+# "Risco aceito" maduro NÃO é "modo relatório para sempre". É uma decisão:
+#   - sobre UMA vulnerabilidade específica (id),
+#   - com justificativa registrada (statement),
+#   - aprovada por alguém com autoridade (no comentário / no PR),
+#   - e com DATA PARA EXPIRAR (expired_at): vencido o prazo, o gate volta a bloquear.
+#
+# Uso no Trivy:  trivy image --ignorefile 04-casos-de-uso/seguranca/trivyignore-exemplo.yaml <imagem>
+# Na trivy-action: env TRIVY_IGNOREFILE com o caminho deste arquivo (ver Exercício 3 do guia).
+# ==============================================================================
+vulnerabilities:
+  # jsonwebtoken 0.4.0 - CVE-2015-9235 (CVSS 9.8): bypass da verificação do JWT
+  # por troca de algoritmo (RS256 -> HS256). Correção: atualizar para >= 4.2.2.
+  # Aceito TEMPORARIAMENTE apenas porque o Juice Shop é vulnerável de propósito
+  # (aplicação de treinamento, sem dados reais, ambiente efêmero).
+  # Aprovado por: Prof. Leandro Santos (dono do risco) | PR: #<número>
+  - id: CVE-2015-9235
+    statement: "Juice Shop é app de treinamento vulnerável por design; sem dados reais; ambiente efêmero."
+    expired_at: 2026-12-31
+
+  # express-jwt 0.1.3 - CVE-2020-15084: bypass de autorização quando 'algorithms'
+  # não é informado. Correção: express-jwt >= 6.0.0 informando algorithms.
+  - id: CVE-2020-15084
+    statement: "Mesmo racional acima; reavaliar na próxima versão do Juice Shop."
+    expired_at: 2026-12-31

@@ -1,0 +1,50 @@
+# ==============================================================================
+# Regras Semgrep "da empresa" - Aula 04 (Caso 1)
+#
+# Ideia DevSecOps: todo incidente/achado relevante vira uma REGRA AUTOMÁTICA,
+# para que o mesmo erro nunca mais chegue à produção ("aprender uma vez,
+# bloquear para sempre"). Regras genéricas (p/owasp-top-ten) são ótimas, mas
+# não conhecem os padrões do NOSSO código; regras próprias conhecem.
+#
+# Testar localmente (no Codespaces):
+#   pipx install semgrep   # ou: pip install semgrep
+#   semgrep scan --config 04-casos-de-uso/seguranca/semgrep-regras-ipog.yml <pasta-do-codigo>
+# ==============================================================================
+rules:
+  - id: ipog-sql-concatenada-sequelize
+    message: >-
+      [Regra IPOG] Consulta SQL montada por concatenação/template literal com dado
+      variável em sequelize.query(). Isso permite SQL Injection (ex.: ' OR 1=1--).
+      Corrija usando bind/replacements (equivalente a Prepared Statement):
+      query('SELECT ... WHERE email = $1', { bind: [email] }).
+    severity: ERROR
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+      owasp: "A03:2021 - Injection"
+      confidence: HIGH
+      references:
+        - https://cheatsheetseries.owasp.org/cheatsheets/Query_Parameterization_Cheat_Sheet.html
+        - https://sequelize.org/docs/v6/core-concepts/raw-queries/#bind-parameter
+    pattern-either:
+      - pattern: $SEQ.query(`...${...}...`, ...)
+      - pattern: $SEQ.query("..." + $X, ...)
+      - pattern: $SEQ.query($X + "...", ...)
+
+  - id: ipog-chave-privada-no-codigo
+    message: >-
+      [Regra IPOG] Chave privada escrita diretamente no código-fonte. Quem lê o
+      repositório consegue assinar tokens (ex.: JWT de administrador). Carregue a
+      chave de um cofre de segredos (Secret Manager/Vault) em tempo de execução e
+      ROTACIONE a chave exposta.
+    severity: ERROR
+    languages: [typescript, javascript]
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      owasp: "A07:2021 - Identification and Authentication Failures"
+      confidence: HIGH
+      references:
+        - https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html
+    pattern-regex: "BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY"

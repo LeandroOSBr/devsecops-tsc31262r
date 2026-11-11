@@ -36,6 +36,17 @@
         "high": 0
       }
     },
+    "sast_empresa": {
+      "titulo": "SAST - regras da empresa (Semgrep custom, Aula 04)",
+      "arquivos": [
+        "semgrep-ipog.sarif"
+      ],
+      "modo": "relatorio",
+      "limites": {
+        "critical": 0,
+        "high": 0
+      }
+    },
     "iac": {
       "titulo": "IaC - Terraform/Dockerfile (Trivy config)",
       "arquivos": [
