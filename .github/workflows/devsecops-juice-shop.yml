@@ -507,10 +507,12 @@ jobs:
   #      variable GCP_PROJECT_ID    ID do projeto GCP
   #      variable TF_STATE_BUCKET   bucket GCS para o terraform.tfstate
   #      variable GCP_ALLOWED_CIDR  CIDR liberado na porta 3000 (ex.: 200.1.2.3/32)
+  #      variable GHCR_OWNER        dono do pacote no GHCR, em minúsculas (ex.: leandroosbr)
+  #      Pacote juice-shop-lab no GHCR com visibilidade pública (a VM baixa sem login)
   # ----------------------------------------------------------------------------
   deploy-gcp:
     name: "8. Deploy GCP (Terraform ${{ github.event.inputs.acao_gcp }})"
-    needs: dast
+    needs: [dast, publicar-imagem]   # só implanta depois que a imagem aprovada foi publicada no GHCR
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.acao_gcp != 'nenhuma'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -524,7 +526,8 @@ jobs:
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
       TF_VAR_allowed_source_ranges: '["${{ vars.GCP_ALLOWED_CIDR }}"]'
-      TF_VAR_container_image: ${{ vars.JUICE_SHOP_IMAGE || 'bkimminich/juice-shop:v20.3.0' }}
+      # A MESMA imagem que passou pelos Quality Gates, identificada pelo commit (nunca "latest")
+      TF_VAR_container_image: ${{ format('ghcr.io/{0}/juice-shop-lab:{1}', vars.GHCR_OWNER, github.sha) }}
     steps:
       - name: "Checkout"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
