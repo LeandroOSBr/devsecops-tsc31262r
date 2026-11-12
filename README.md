@@ -1,4 +1,5 @@
 # 🛡️ Ambiente de Desenvolvimento e Operação - DevSecOps (Turma TSC31262R)
+# 11/11/2026 21:21 - Alteração para iniciar execução da esteira CI/CD.
 
 Bem-vindos ao repositório prático oficial da disciplina **Ambiente de Desenvolvimento e Operação - DevSecOps** do curso de **Segurança Cibernética do IPOG**!
 
