@@ -75,6 +75,9 @@ Descomente o bloco `ssh_aberto_inseguro` no final de `03-pratica-pipeline-devsec
 **Exercício 3 – Escreva uma regra (15 min).**
 Crie em `terraform.rego` a regra `IPOG-GCP-006`: toda VM deve ter a label `course`. Escreva também o teste dela em `politicas_test.rego` e rode `conftest verify`.
 
+**Exercício 3b – A regra que faltou (15 min).**
+Na aula, o Load Balancer do GKE foi liberado para `186.0.0.0/8`, cerca de 16 milhões de endereços, e o Conftest aprovou. Escreva em `kubernetes.rego` a regra `IPOG-K8S-009`, que barra `loadBalancerSourceRanges` com prefixo menor que `/24`. Dica: `split(faixa, "/")` e `to_number(...)`. Escreva o teste e rode `conftest verify`.
+
 **Exercício 4 – Gate de SCA que bloqueia (5 min).**
 *Actions → Esteira DevSecOps → Run workflow* com `modo_sca = bloqueio`. O Juice Shop tem dependências com CVE **CRITICAL**, então a esteira para no Quality Gate e o DAST não roda. Como liberar sem desligar o controle? Corrigindo a dependência ou registrando a exceção com prazo (`04-casos-de-uso/seguranca/trivyignore-exemplo.yaml`).
 
@@ -123,3 +126,15 @@ O Conftest barra esses erros **antes** do deploy (Shift Left), e o PSA barra de 
 **No Autopilot o Google gerencia os nós.** Você paga pelo que os Pods pedem (`resources.requests`), por isso o manifesto pede exatamente 0,5 vCPU e 1 GiB.
 
 Para não gerar custo, ao terminar rode `acao_gcp = destroy` com `alvo_gcp = gke`. O job apaga primeiro o namespace, o que libera o Load Balancer, e depois o cluster.
+
+## 7. Relatório visual (job 11)
+
+Toda execução gera o artifact **relatorio-visual-devsecops**: um HTML único, que abre offline, com os achados de todas as ferramentas (Gitleaks, Semgrep, Trivy, Checkov, Conftest, SBOM e OWASP ZAP). Ele usa a mesma política e a mesma contagem do Quality Gate.
+
+1. Abra a execução no *Actions* e baixe o artifact no fim da página.
+2. Abra o `relatorio-devsecops.html` no navegador.
+3. Use os botões de severidade e a busca. Por exemplo, filtre só "Crítica" e procure `jsonwebtoken`.
+
+**Exercício 7.** Compare o relatório de uma execução com `modo_sca = relatorio` e de outra com `modo_sca = bloqueio`. O que muda na tabela "Por ferramenta e decisão da política"?
+
+O script fica em `03-pratica-pipeline-devsecops/seguranca/relatorio_html.py`. Ele é Python puro, sem bibliotecas externas, e você pode adaptá-lo.
