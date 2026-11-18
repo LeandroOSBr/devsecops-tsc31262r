@@ -24,6 +24,7 @@
 #        └──────────────────────────────┘   └───────────────────────────────┘
 #
 #  10. 🔐 Cofre de segredos (Vault efêmero) - demonstração opcional e independente
+#  11. 🧾 Relatório visual - um HTML com os achados de TODAS as ferramentas
 #
 # Aula 05: no "destroy" os scanners são pulados (destruir não publica código novo).
 #
@@ -601,6 +602,46 @@ jobs:
       - name: "Logs da aplicação (em caso de falha)"
         if: failure()
         run: docker logs juice-shop || true
+
+  # ----------------------------------------------------------------------------
+  # 11. 🧾 RELATÓRIO VISUAL (Aula 05) - um único HTML com TODAS as ferramentas
+  #     (Gitleaks, Semgrep, Trivy, Checkov, Conftest, Trivy image, SBOM e ZAP)
+  #     Roda mesmo com o gate reprovado ou sem DAST: mostra o que houver.
+  # ----------------------------------------------------------------------------
+  relatorio-visual:
+    name: "11. 🧾 Relatório visual (todas as ferramentas)"
+    needs: [quality-gate, dast]
+    if: ${{ !cancelled() && github.event.inputs.acao_gcp != 'destroy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Baixar os relatórios de todas as ferramentas (inclui o ZAP)"
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: relatorio-*
+          path: relatorios
+          merge-multiple: true
+
+      - name: "Gerar o HTML consolidado"
+        env:
+          FORCAR_BLOQUEIO: ${{ github.event.inputs.modo_sca == 'bloqueio' && 'container' || '' }}
+        run: |
+          mkdir -p relatorios
+          python3 "${LAB_DIR}/seguranca/relatorio_html.py" \
+            --politica "${LAB_DIR}/seguranca/politica-quality-gate.json" \
+            --relatorios relatorios \
+            --forcar-bloqueio "${FORCAR_BLOQUEIO}" \
+            --saida relatorio-devsecops.html
+
+      - name: "Guardar o relatório visual"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relatorio-visual-devsecops
+          path: relatorio-devsecops.html
 
   # ----------------------------------------------------------------------------
   # 7. PUBLICAR a imagem aprovada no registry (GitHub Container Registry)
