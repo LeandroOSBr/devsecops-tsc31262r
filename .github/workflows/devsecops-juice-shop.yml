@@ -686,23 +686,25 @@ jobs:
   #      Pacote juice-shop-lab no GHCR com visibilidade pública (a VM baixa sem login)
   # ----------------------------------------------------------------------------
   deploy-gcp:
-    name: "8. Deploy GCP (Terraform ${{ github.event.inputs.acao_gcp }})"
-    needs: [dast, publicar-imagem]   # só implanta depois que a imagem aprovada foi publicada no GHCR
-    # Aula 05: no destroy os scanners são pulados; plan/apply exigem a imagem aprovada e publicada
+    name: "8. Plan GCP VM (Terraform ${{ github.event.inputs.acao_gcp }}, sem aprovação)"
+    needs: [dast, publicar-imagem]   # só planeja depois que a imagem aprovada foi publicada no GHCR
+    # O PLAN roda sem aprovação, para você conhecer o resultado proposto.
+    # Só o APPLY (job 8 · apply) passa pelo environment producao-gcp (Required reviewers).
     if: >-
       ${{ !cancelled() && github.event_name == 'workflow_dispatch'
           && github.event.inputs.alvo_gcp != 'gke'
           && github.event.inputs.acao_gcp != 'nenhuma'
           && (github.event.inputs.acao_gcp == 'destroy' || needs.publicar-imagem.result == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: producao-gcp
+    timeout-minutes: 15
     defaults:
       run:
-        working-directory: ${{ env.LAB_DIR }}/infra
+        working-directory: ${{ env.TF_DIR }}
     env:
       ACAO: ${{ github.event.inputs.acao_gcp }}
       TF_IN_AUTOMATION: "true"
+      TF_DIR: ${{ github.workspace }}/03-pratica-pipeline-devsecops/infra
+      ARTEFATO_PLANO: tfplan-vm-${{ github.run_id }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
       TF_VAR_allowed_source_ranges: '["${{ vars.GCP_ALLOWED_CIDR }}"]'
@@ -728,16 +730,94 @@ jobs:
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="prefix=juice-shop/tsc31262r"
 
-      - name: "terraform plan"
+      - name: "terraform plan (sem aprovação: só mostra o que vai mudar)"
         run: |
           if [ "${ACAO}" = "destroy" ]; then
-            terraform plan -destroy -input=false -out=tfplan
+            terraform plan -destroy -input=false -no-color -out=tfplan | tee plano.txt
           else
-            terraform plan -input=false -out=tfplan
+            terraform plan -input=false -no-color -out=tfplan | tee plano.txt
           fi
 
-      - name: "terraform apply (executa exatamente o plano revisado)"
+      - name: "Plano proposto no resumo da execução"
+        run: |
+          RESUMO="$(grep -E '^(Plan:|No changes\.)' plano.txt | tail -1)"
+          {
+            echo "### 📝 Terraform plan (juice-shop/tsc31262r): ${RESUMO:-veja o log}"
+            echo ""
+            echo "<details><summary>Plano completo</summary>"
+            echo ""
+            echo '```'
+            terraform show -no-color tfplan | head -c 60000 || true
+            echo '```'
+            echo "</details>"
+            echo ""
+            if [ "${ACAO}" = "plan" ]; then
+              echo "Ação = **plan**: nada foi alterado no GCP."
+            else
+              echo "⏸️ O **apply** aguarda a sua aprovação no environment \`producao-gcp\` e vai executar **exatamente este plano**."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Guardar o plano para o apply"
         if: env.ACAO == 'apply' || env.ACAO == 'destroy'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTEFATO_PLANO }}
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/.terraform.lock.hcl
+          include-hidden-files: true
+          retention-days: 1
+
+  deploy-gcp-apply:
+    name: "8. Apply GCP VM (aprovação obrigatória: ${{ github.event.inputs.acao_gcp }})"
+    needs: [deploy-gcp]
+    if: >-
+      ${{ !cancelled() && needs.deploy-gcp.result == 'success'
+          && (github.event.inputs.acao_gcp == 'apply' || github.event.inputs.acao_gcp == 'destroy') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: producao-gcp     # Required reviewers: a esteira PARA aqui até o professor aprovar
+    defaults:
+      run:
+        working-directory: ${{ env.TF_DIR }}
+    env:
+      ACAO: ${{ github.event.inputs.acao_gcp }}
+      TF_IN_AUTOMATION: "true"
+      TF_DIR: ${{ github.workspace }}/03-pratica-pipeline-devsecops/infra
+      ARTEFATO_PLANO: tfplan-vm-${{ github.run_id }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_allowed_source_ranges: '["${{ vars.GCP_ALLOWED_CIDR }}"]'
+      # A MESMA imagem que passou pelos Quality Gates, identificada pelo commit (nunca "latest")
+      TF_VAR_container_image: ${{ format('ghcr.io/{0}/juice-shop-lab:{1}', vars.GHCR_OWNER, github.sha) }}
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Baixar o plano aprovado"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.ARTEFATO_PLANO }}
+          path: ${{ env.TF_DIR }}
+
+      - name: "Autenticar no Google Cloud"
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: "Configurar Terraform"
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: "terraform init (mesmo estado e mesmo lock do plan)"
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=juice-shop/tsc31262r"
+
+      - name: "terraform apply do plano aprovado (se o estado mudou, o plano fica obsoleto e o apply falha)"
         run: terraform apply -input=false tfplan
 
       - name: "URL do ambiente"
@@ -754,8 +834,15 @@ jobs:
   #       API container.googleapis.com ativa e, na SA de deploy, os papéis
   #       roles/container.admin e roles/iam.serviceAccountUser (na SA padrão do Compute)
   # ----------------------------------------------------------------------------
+  # ----------------------------------------------------------------------------
+  # 8b. DEPLOY NO GKE AUTOPILOT (Aula 05) - Terraform cria o cluster, kubectl
+  #     aplica o MESMO manifesto que o Conftest validou (05-compliance-metricas/k8s)
+  #     Run workflow com alvo_gcp = gke. Pré-requisitos além dos do job 8:
+  #       API container.googleapis.com ativa e, na SA de deploy, os papéis
+  #       roles/container.admin e roles/iam.serviceAccountUser (na SA padrão do Compute)
+  # ----------------------------------------------------------------------------
   deploy-gke:
-    name: "8b. Deploy GKE Autopilot (${{ github.event.inputs.acao_gcp }})"
+    name: "8b. Plan GKE Autopilot (${{ github.event.inputs.acao_gcp }}, sem aprovação)"
     needs: [dast, publicar-imagem]
     if: >-
       ${{ !cancelled() && github.event_name == 'workflow_dispatch'
@@ -763,14 +850,15 @@ jobs:
           && github.event.inputs.acao_gcp != 'nenhuma'
           && (github.event.inputs.acao_gcp == 'destroy' || needs.publicar-imagem.result == 'success') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    environment: producao-gcp
+    timeout-minutes: 15
     defaults:
       run:
-        working-directory: ${{ env.LAB_DIR }}/infra-gke
+        working-directory: ${{ env.TF_DIR }}
     env:
       ACAO: ${{ github.event.inputs.acao_gcp }}
       TF_IN_AUTOMATION: "true"
+      TF_DIR: ${{ github.workspace }}/03-pratica-pipeline-devsecops/infra-gke
+      ARTEFATO_PLANO: tfplan-gke-${{ github.run_id }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
       ALLOWED_CIDR: ${{ vars.GCP_ALLOWED_CIDR }}
@@ -796,6 +884,105 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
+      - name: "Configurar Terraform"
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: "terraform init (estado remoto no GCS)"
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=juice-shop/tsc31262r-gke"
+
+      - name: "terraform plan (sem aprovação: só mostra o que vai mudar)"
+        run: |
+          if [ "${ACAO}" = "destroy" ]; then
+            terraform plan -destroy -input=false -no-color -out=tfplan | tee plano.txt
+          else
+            terraform plan -input=false -no-color -out=tfplan | tee plano.txt
+          fi
+
+      - name: "Plano proposto no resumo da execução"
+        run: |
+          RESUMO="$(grep -E '^(Plan:|No changes\.)' plano.txt | tail -1)"
+          {
+            echo "### 📝 Terraform plan (juice-shop/tsc31262r-gke): ${RESUMO:-veja o log}"
+            echo ""
+            echo "<details><summary>Plano completo</summary>"
+            echo ""
+            echo '```'
+            terraform show -no-color tfplan | head -c 60000 || true
+            echo '```'
+            echo "</details>"
+            echo ""
+            if [ "${ACAO}" = "plan" ]; then
+              echo "Ação = **plan**: nada foi alterado no GCP."
+            else
+              echo "⏸️ O **apply** aguarda a sua aprovação no environment \`producao-gcp\` e vai executar **exatamente este plano**."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "Guardar o plano para o apply"
+        if: env.ACAO == 'apply' || env.ACAO == 'destroy'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.ARTEFATO_PLANO }}
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/.terraform.lock.hcl
+          include-hidden-files: true
+          retention-days: 1
+
+  deploy-gke-apply:
+    name: "8b. Apply GKE Autopilot (aprovação obrigatória: ${{ github.event.inputs.acao_gcp }})"
+    needs: [deploy-gke]
+    if: >-
+      ${{ !cancelled() && needs.deploy-gke.result == 'success'
+          && (github.event.inputs.acao_gcp == 'apply' || github.event.inputs.acao_gcp == 'destroy') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: producao-gcp     # Required reviewers: a esteira PARA aqui até o professor aprovar
+    defaults:
+      run:
+        working-directory: ${{ env.TF_DIR }}
+    env:
+      ACAO: ${{ github.event.inputs.acao_gcp }}
+      TF_IN_AUTOMATION: "true"
+      TF_DIR: ${{ github.workspace }}/03-pratica-pipeline-devsecops/infra-gke
+      ARTEFATO_PLANO: tfplan-gke-${{ github.run_id }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      ALLOWED_CIDR: ${{ vars.GCP_ALLOWED_CIDR }}
+      # A MESMA imagem aprovada pelos Quality Gates (commit), nunca "latest"
+      IMAGEM: ${{ format('ghcr.io/{0}/juice-shop-lab:{1}', vars.GHCR_OWNER, github.sha) }}
+      NS: juice-shop
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Baixar o plano aprovado"
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.ARTEFATO_PLANO }}
+          path: ${{ env.TF_DIR }}
+
+      - name: "Autenticar no Google Cloud"
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: "Configurar Terraform"
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: "terraform init (mesmo estado e mesmo lock do plan)"
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=juice-shop/tsc31262r-gke"
+
       - name: "Ferramentas: gcloud, gke-gcloud-auth-plugin e kubectl"
         run: |
           if ! command -v gcloud >/dev/null || ! command -v gke-gcloud-auth-plugin >/dev/null; then
@@ -811,17 +998,6 @@ jobs:
           gke-gcloud-auth-plugin --version | head -1
           kubectl version --client | head -1
 
-      - name: "Configurar Terraform"
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
-        with:
-          terraform_wrapper: false
-
-      - name: "terraform init (estado remoto no GCS, prefixo próprio do GKE)"
-        run: |
-          terraform init -input=false \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="prefix=juice-shop/tsc31262r-gke"
-
       - name: "Destroy: remover a aplicação antes do cluster (libera o Load Balancer)"
         if: env.ACAO == 'destroy'
         run: |
@@ -833,16 +1009,7 @@ jobs:
             echo "Cluster não encontrado no estado; seguindo para o destroy."
           fi
 
-      - name: "terraform plan"
-        run: |
-          if [ "${ACAO}" = "destroy" ]; then
-            terraform plan -destroy -input=false -out=tfplan
-          else
-            terraform plan -input=false -out=tfplan
-          fi
-
-      - name: "terraform apply (cria o cluster Autopilot: ~10 minutos na primeira vez)"
-        if: env.ACAO == 'apply' || env.ACAO == 'destroy'
+      - name: "terraform apply do plano aprovado (se o estado mudou, o plano fica obsoleto e o apply falha)"
         run: terraform apply -input=false tfplan
 
       - name: "Credenciais do cluster (kubectl)"
