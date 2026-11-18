@@ -949,9 +949,12 @@ jobs:
           V=$(curl -fsS -H "X-Vault-Token: ${APP_TOKEN}" "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt" | jq -r .data.metadata.version)
           echo "A aplicação agora lê a versão ${V} do segredo (a versão 1 continua no histórico do cofre)."
 
-      - name: "6. Revogação: a credencial vazou? Revoga e ela morre na hora"
+      - name: "6. Revogação: a credencial vazou? A segurança revoga e ela morre na hora"
         run: |
-          curl -fsS -H "X-Vault-Token: ${APP_TOKEN}" -X POST "${VAULT_ADDR}/v1/auth/token/revoke-self"
+          # Quem revoga é a equipe de segurança (o token da aplicação só tem permissão de LEITURA,
+          # sem a política "default"; por isso nem ele mesmo consegue se revogar: menor privilégio)
+          jq -n --arg t "$APP_TOKEN" '{token:$t}' | \
+            curl -fsS -H "X-Vault-Token: ${ROOT_TOKEN}" -X POST "${VAULT_ADDR}/v1/auth/token/revoke" -d @-
           C=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Vault-Token: ${APP_TOKEN}" "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt")
           echo "Leitura com o token revogado: HTTP ${C}"
           if [ "$C" = "403" ]; then echo "✅ Token revogado não acessa mais nada"; else echo "::error::Esperado 403"; exit 1; fi
