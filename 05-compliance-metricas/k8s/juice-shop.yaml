@@ -1,0 +1,115 @@
+# ==============================================================================
+# Juice Shop no Kubernetes com as práticas de segurança da Aula 05
+# (o mesmo app da esteira; arquivo usado na revisão de Kubernetes e validado
+#  pelo Conftest no job "Compliance como código")
+#
+#   Namespace  -> Pod Security Admission (PSA) no nível "restricted"
+#   Deployment -> Pod = menor unidade do Kubernetes (aqui: 1 container principal;
+#                 um sidecar seria um 2º container no MESMO Pod, ex.: proxy/log)
+#   NetworkPolicy -> nega tudo por padrão e libera só a porta 3000
+#   Service LoadBalancer -> IP público, mas só para a faixa autorizada
+#
+# A esteira (job 8b, alvo_gcp = gke) troca a imagem pelo commit aprovado e
+# __ALLOWED_CIDR__ pela variable GCP_ALLOWED_CIDR antes do kubectl apply.
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: juice-shop
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juice-shop
+  namespace: juice-shop
+  labels:
+    app: juice-shop
+spec:
+  replicas: 1 # SQLite local do Juice Shop: 1 réplica mantém login e carrinho consistentes
+  selector:
+    matchLabels:
+      app: juice-shop
+  template:
+    metadata:
+      labels:
+        app: juice-shop
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: juice-shop
+          # Mesma imagem aprovada pela esteira (troque pelo commit publicado no GHCR)
+          image: ghcr.io/OWNER/juice-shop-lab:COMMIT_SHA
+          ports:
+            - containerPort: 3000
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false # o Juice Shop grava arquivos locais (risco aceito do lab)
+            capabilities:
+              drop: ["ALL"]
+          resources: # no Autopilot, o que se pede é o que se paga
+            requests:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /rest/admin/application-version
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: juice-shop
+  namespace: juice-shop
+spec:
+  type: LoadBalancer
+  # Equivalente ao firewall da VM: só a faixa autorizada alcança o IP público
+  loadBalancerSourceRanges:
+    - __ALLOWED_CIDR__
+  selector:
+    app: juice-shop
+  ports:
+    - port: 80
+      targetPort: 3000
+---
+# Negar tudo por padrão (entrada e saída) no namespace...
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: negar-tudo
+  namespace: juice-shop
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# ...e liberar somente o necessário: entrada na porta 3000
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: permitir-http-juice-shop
+  namespace: juice-shop
+spec:
+  podSelector:
+    matchLabels:
+      app: juice-shop
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 3000

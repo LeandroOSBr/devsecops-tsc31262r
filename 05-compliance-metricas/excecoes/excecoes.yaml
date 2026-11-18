@@ -1,0 +1,11 @@
+# ==============================================================================
+# Registro de exceções (risco aceito) das políticas de compliance - Aula 05
+# "Exceção sem dono é regra desligada": toda exceção tem DONO, JUSTIFICATIVA e
+# VALIDADE. Vencida a data, a política volta a bloquear sozinha.
+# ==============================================================================
+excecoes:
+  - regra: IPOG-GCP-001
+    recurso: google_compute_instance.juice_shop
+    dono: "Prof. Leandro Santos"
+    justificativa: "Laboratório da turma TSC31262R precisa de IP público; acesso limitado por firewall a um CIDR /32."
+    validade: "2026-12-31"

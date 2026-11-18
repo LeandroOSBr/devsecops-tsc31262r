@@ -64,6 +64,8 @@ def ler_sarif(caminho, severidade_padrao=None):
         for res in run.get("results", []) or []:
             if res.get("suppressions"):
                 continue  # achado suprimido/justificado na própria ferramenta
+            if res.get("level") == "none" or res.get("kind") == "pass":
+                continue  # Conftest também registra as regras que PASSARAM; não é achado
             regra = regras.get(res.get("ruleId"), {})
             score = (regra.get("properties") or {}).get("security-severity")
             if severidade_padrao:
@@ -77,7 +79,10 @@ def ler_sarif(caminho, severidade_padrao=None):
                 level = res.get("level") or (regra.get("defaultConfiguration") or {}).get("level")
                 sev = severidade_por_level(level)
             nome = (regra.get("shortDescription") or {}).get("text") or regra.get("name") or res.get("ruleId")
-            achados.append((sev, f"{res.get('ruleId')} - {nome}"[:120], local_sarif(res)))
+            if (regra.get("properties") or {}).get("query"):
+                # Conftest/OPA (Aula 05): a regra é genérica (deny/warn); o que importa é a mensagem
+                nome = (res.get("message") or {}).get("text") or nome
+            achados.append((sev, f"{res.get('ruleId')} - {nome}"[:200], local_sarif(res)))
     return achados
 
 
@@ -103,7 +108,13 @@ def main():
     ap.add_argument("--categorias", required=True, help="lista separada por vírgula")
     ap.add_argument("--detalhado", help="(opcional) gera um relatório Markdown com TODOS os achados "
                                         "críticos/altos e o arquivo:linha de cada um")
+    ap.add_argument("--forcar-bloqueio", default="",
+                    help="(Aula 05) categorias que passam a BLOQUEAR nesta execução, ex.: container")
+    ap.add_argument("--resumo-json", help="(Aula 05) grava a contagem por categoria/severidade em JSON "
+                                          "(usado pelo job de métricas)")
     args = ap.parse_args()
+    forcadas = {c.strip() for c in args.forcar_bloqueio.split(",") if c.strip()}
+    resumo_json = {}
 
     with open(args.politica, encoding="utf-8") as f:
         politica = json.load(f)["categorias"]
@@ -118,7 +129,10 @@ def main():
     reprovado = False
 
     for cat in [c.strip() for c in args.categorias.split(",") if c.strip()]:
-        cfg = politica[cat]
+        cfg = dict(politica[cat])
+        if cat in forcadas and cfg["modo"] != "bloqueio":
+            cfg["modo"] = "bloqueio"
+            cfg["titulo"] += " 🔒 (bloqueio forçado nesta execução)"
         arquivos = []
         for padrao in cfg["arquivos"]:
             arquivos += glob.glob(os.path.join(args.relatorios, "**", padrao), recursive=True)
@@ -138,6 +152,8 @@ def main():
                 achados += ler_sarif(arq, cfg.get("severidade_padrao"))
 
         cont = Counter(a[0] for a in achados)
+        resumo_json[cat] = {"titulo": cfg["titulo"], "modo": cfg["modo"],
+                            "contagem": {s: cont.get(s, 0) for s in SEVERIDADES}}
         excedidos = [s for s, maximo in cfg["limites"].items() if cont.get(s, 0) > maximo]
 
         if not excedidos:
@@ -178,6 +194,10 @@ def main():
         os.makedirs(os.path.dirname(os.path.abspath(args.detalhado)), exist_ok=True)
         with open(args.detalhado, "w", encoding="utf-8") as f:
             f.write("\n".join(completo) + "\n")
+    if args.resumo_json:
+        os.makedirs(os.path.dirname(os.path.abspath(args.resumo_json)), exist_ok=True)
+        with open(args.resumo_json, "w", encoding="utf-8") as f:
+            json.dump({"aprovado": not reprovado, "categorias": resumo_json}, f, ensure_ascii=False, indent=2)
     resumo = os.environ.get("GITHUB_STEP_SUMMARY")
     if resumo:
         with open(resumo, "a", encoding="utf-8") as f:

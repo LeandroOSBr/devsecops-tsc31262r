@@ -69,6 +69,17 @@
         "high": 0
       }
     },
+    "compliance": {
+      "titulo": "Compliance como código - regras da empresa (Conftest/OPA, Aula 05)",
+      "arquivos": [
+        "conftest-*.sarif"
+      ],
+      "modo": "bloqueio",
+      "limites": {
+        "critical": 0,
+        "high": 0
+      }
+    },
     "container": {
       "titulo": "SCA + Container (Trivy image)",
       "arquivos": [
@@ -89,5 +100,6 @@
         "high": 0
       }
     }
-  }
+  },
+  "_comentario_aula05": "Aula 05: a categoria 'compliance' traz as regras PRÓPRIAS da empresa (deny = high = bloqueia; warn = medium = alerta). Para demonstrar um gate de SCA que bloqueia CRITICAL, rode a esteira manualmente com modo_sca=bloqueio (o script recebe --forcar-bloqueio container)."
 }

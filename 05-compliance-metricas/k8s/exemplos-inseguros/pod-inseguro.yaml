@@ -1,0 +1,35 @@
+# ==============================================================================
+# ⚠️ EXEMPLO INSEGURO (demonstração da Aula 05) - NÃO aplique em um cluster.
+# Rode:  conftest test -p 05-compliance-metricas/politicas --namespace kubernetes \
+#          05-compliance-metricas/k8s/exemplos-inseguros/pod-inseguro.yaml
+# e conte quantas regras ele quebra. A esteira NÃO varre esta pasta.
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loja
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: loja-api
+  namespace: loja
+spec:
+  hostNetwork: true
+  containers:
+    - name: api
+      image: loja/api:latest
+      securityContext:
+        privileged: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loja-api
+  namespace: loja
+spec:
+  type: LoadBalancer
+  selector:
+    app: loja-api
+  ports:
+    - port: 80

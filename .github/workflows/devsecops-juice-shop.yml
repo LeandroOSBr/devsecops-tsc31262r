@@ -3,15 +3,15 @@
 # Professor: Leandro de Oliveira Santos
 # Prática 03: Esteira DevSecOps completa para o OWASP Juice Shop
 #
-#  ┌──────────────┐  ┌─────────┐  ┌───────────────┐  ┌──────────────────────┐
-#  │ 1. Segredos  │  │ 2. SAST │  │ 3. IaC        │  │ 4. Build + SCA/      │
-#  │   Gitleaks   │  │ Semgrep │  │ Terraform     │  │    Container (Trivy) │
-#  └──────┬───────┘  └────┬────┘  │ Trivy+Checkov │  │    + SBOM            │
-#         │               │       └──────┬────────┘  └──────────┬───────────┘
-#         └───────────────┴──────┬───────┴──────────────────────┘
+#  ┌──────────────┐  ┌─────────┐  ┌───────────────┐  ┌──────────────┐  ┌──────────────────────┐
+#  │ 1. Segredos  │  │ 2. SAST │  │ 3. IaC        │  │ 3b.Compliance│  │ 4. Build + SCA/      │
+#  │   Gitleaks   │  │ Semgrep │  │ Terraform     │  │ como código  │  │    Container (Trivy) │
+#  └──────┬───────┘  └────┬────┘  │ Trivy+Checkov │  │ Conftest/OPA │  │    + SBOM            │
+#         │               │       └──────┬────────┘  └──────┬───────┘  └──────────┬───────────┘
+#         └───────────────┴──────┬───────┴──────────────────┴─────────────────────┘
 #                                ▼
 #                   ┌──────────────────────────┐
-#                   │ 5. QUALITY GATE (política)│
+#                   │ 5. QUALITY GATE (política)│──► 9. 📊 Métricas (achados + DORA)
 #                   └────────────┬─────────────┘
 #                                ▼
 #                   ┌──────────────────────────┐
@@ -20,15 +20,19 @@
 #                                ▼
 #        ┌──────────────────────────────┐   ┌───────────────────────────────┐
 #        │ 7. Publica imagem no GHCR    │   │ 8. Deploy GCP com Terraform   │
-#        │    (somente branch main)     │   │    (manual + aprovação)       │
+#        │    (somente branch main)     │   │    VM (8) ou GKE Autopilot(8b)│
 #        └──────────────────────────────┘   └───────────────────────────────┘
+#
+#  10. 🔐 Cofre de segredos (Vault efêmero) - demonstração opcional e independente
+#
+# Aula 05: no "destroy" os scanners são pulados (destruir não publica código novo).
 #
 # SEGURANÇA DA PRÓPRIA ESTEIRA: todas as Actions de terceiros estão fixadas
 # pelo HASH do commit (imutável), e não pela tag (mutável). Em março/2026 as
 # tags do aquasecurity/trivy-action foram sobrescritas por atacantes
 # (CVE-2026-33634) e quem usava "@tag" executou um ladrão de credenciais.
 # ==============================================================================
-name: "🧃 Esteira DevSecOps - Juice Shop (Aulas 03 e 04)"
+name: "🧃 Esteira DevSecOps - Juice Shop (Aulas 03 a 05)"
 
 on:
   push:
@@ -36,6 +40,7 @@ on:
     paths:
       - "03-pratica-pipeline-devsecops/**"
       - "04-casos-de-uso/**"
+      - "05-compliance-metricas/**"
       - ".gitleaksignore"
       - ".github/workflows/devsecops-juice-shop.yml"
   pull_request:
@@ -43,6 +48,7 @@ on:
     paths:
       - "03-pratica-pipeline-devsecops/**"
       - "04-casos-de-uso/**"
+      - "05-compliance-metricas/**"
       - ".gitleaksignore"
       - ".github/workflows/devsecops-juice-shop.yml"
   workflow_dispatch:
@@ -57,6 +63,20 @@ on:
         type: choice
         options: [nenhuma, plan, apply, destroy]
         default: nenhuma
+      alvo_gcp:
+        description: "Aula 05 - Onde implantar no GCP: vm (Compute Engine) ou gke (Kubernetes Autopilot)"
+        type: choice
+        options: [vm, gke]
+        default: vm
+      modo_sca:
+        description: "Aula 05 - Quality Gate de SCA/Container (bloqueio = CRITICAL reprova a esteira)"
+        type: choice
+        options: [relatorio, bloqueio]
+        default: relatorio
+      demo_cofre:
+        description: "Aula 05 - Executar a demonstração do cofre de segredos (Vault efêmero)"
+        type: boolean
+        default: false
 
 # Menor privilégio: cada job pede somente o que precisa
 permissions:
@@ -73,6 +93,8 @@ env:
   SEMGREP_VERSION: "1.183.0"
   GITLEAKS_VERSION: "8.30.1"
   TRIVY_VERSION: "v0.76.1"
+  CONFTEST_VERSION: "0.71.0"
+  AULA05_DIR: 05-compliance-metricas
 
 jobs:
   # ----------------------------------------------------------------------------
@@ -80,6 +102,7 @@ jobs:
   # ----------------------------------------------------------------------------
   segredos:
     name: "1. Secret Scanning (Gitleaks)"
+    if: github.event.inputs.acao_gcp != 'destroy'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -138,6 +161,7 @@ jobs:
   # ----------------------------------------------------------------------------
   sast:
     name: "2. SAST (Semgrep)"
+    if: github.event.inputs.acao_gcp != 'destroy'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -207,6 +231,7 @@ jobs:
   # ----------------------------------------------------------------------------
   iac:
     name: "3. IaC (Terraform + Trivy + Checkov)"
+    if: github.event.inputs.acao_gcp != 'destroy'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -276,10 +301,67 @@ jobs:
           path: relatorios/
 
   # ----------------------------------------------------------------------------
+  # 3b. COMPLIANCE COMO CÓDIGO (Aula 05) - regras DA EMPRESA escritas em Rego
+  #     Trivy/Checkov = regras genéricas do mercado; Conftest/OPA = nossas regras
+  #     (ex.: "VM não tem IP público, salvo exceção com dono e validade").
+  # ----------------------------------------------------------------------------
+  compliance:
+    name: "3b. Compliance como código (Conftest/OPA)"
+    if: github.event.inputs.acao_gcp != 'destroy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Instalar Conftest ${{ env.CONFTEST_VERSION }} (com verificação de checksum SHA-256)"
+        run: |
+          V="${CONFTEST_VERSION}"
+          ARQ="conftest_${V}_Linux_x86_64.tar.gz"
+          BASE="https://github.com/open-policy-agent/conftest/releases/download/v${V}"
+          curl -sSLO "${BASE}/${ARQ}"
+          curl -sSL -o checksums.txt "${BASE}/checksums.txt"
+          grep " ${ARQ}\$" checksums.txt | sha256sum --check
+          tar -xzf "${ARQ}" conftest
+          ./conftest --version
+
+      - name: "Política também é código: testes unitários das regras (conftest verify)"
+        run: ./conftest verify -p "${AULA05_DIR}/politicas"
+
+      - name: "Avaliar Terraform, Dockerfile e Kubernetes contra as regras da empresa"
+        run: |
+          mkdir -p relatorios
+          P="${AULA05_DIR}/politicas"
+          # Exit code 0 sempre: quem decide se bloqueia é o Quality Gate (política central)
+          ./conftest test --parser hcl2 -p "$P" --namespace terraform --data "${AULA05_DIR}/excecoes" \
+            "${LAB_DIR}"/infra/*.tf "${LAB_DIR}"/infra-gke/*.tf -o sarif > relatorios/conftest-terraform.sarif || true
+          ./conftest test -p "$P" --namespace docker \
+            "${LAB_DIR}/app/Dockerfile" -o sarif > relatorios/conftest-docker.sarif || true
+          ./conftest test -p "$P" --namespace kubernetes \
+            "${AULA05_DIR}"/k8s/*.yaml -o sarif > relatorios/conftest-kubernetes.sarif || true
+          echo "===== Resultado legível ====="
+          ./conftest test --parser hcl2 -p "$P" --namespace terraform --data "${AULA05_DIR}/excecoes" "${LAB_DIR}"/infra/*.tf "${LAB_DIR}"/infra-gke/*.tf || true
+          ./conftest test -p "$P" --namespace docker "${LAB_DIR}/app/Dockerfile" || true
+          ./conftest test -p "$P" --namespace kubernetes "${AULA05_DIR}"/k8s/*.yaml || true
+          for f in relatorios/conftest-*.sarif; do
+            jq -e . "$f" > /dev/null || { echo "::error::SARIF inválido: $f"; exit 1; }
+          done
+
+      - name: "Guardar relatórios"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: relatorio-compliance
+          path: relatorios/
+
+  # ----------------------------------------------------------------------------
   # 4. BUILD + SCA/CONTAINER SCAN + SBOM
   # ----------------------------------------------------------------------------
   build-container:
     name: "4. Build + SCA/Container (Trivy) + SBOM"
+    if: github.event.inputs.acao_gcp != 'destroy'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -362,7 +444,8 @@ jobs:
   # ----------------------------------------------------------------------------
   quality-gate:
     name: "5. 🚦 Quality Gate"
-    needs: [segredos, sast, iac, build-container]
+    needs: [segredos, sast, iac, compliance, build-container]
+    if: github.event.inputs.acao_gcp != 'destroy'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -377,12 +460,25 @@ jobs:
           merge-multiple: true
 
       - name: "Avaliar política (seguranca/politica-quality-gate.json)"
+        env:
+          # Aula 05: modo_sca=bloqueio faz o SCA/Container reprovar com qualquer CRITICAL
+          FORCAR_BLOQUEIO: ${{ github.event.inputs.modo_sca == 'bloqueio' && 'container' || '' }}
         run: |
           python3 "${LAB_DIR}/seguranca/quality_gate.py" \
             --politica "${LAB_DIR}/seguranca/politica-quality-gate.json" \
             --relatorios relatorios \
-            --categorias segredos_repo,segredos_app,sast,sast_empresa,iac,iac_checkov,container \
+            --categorias segredos_repo,segredos_app,sast,sast_empresa,iac,iac_checkov,compliance,container \
+            --forcar-bloqueio "${FORCAR_BLOQUEIO}" \
+            --resumo-json resumo/resumo-quality-gate.json \
             --detalhado relatorios/achados-detalhados.md
+
+      - name: "Guardar resumo para o job de métricas"
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: resumo-quality-gate
+          path: resumo/resumo-quality-gate.json
+          if-no-files-found: ignore
 
       - name: "Guardar relatório detalhado (arquivo:linha de cada achado)"
         if: always()
@@ -391,6 +487,44 @@ jobs:
           name: achados-detalhados
           path: relatorios/achados-detalhados.md
           if-no-files-found: ignore
+
+  # ----------------------------------------------------------------------------
+  # 9. MÉTRICAS (Aula 05) - pilar Medição do CALMS: achados + métricas DORA
+  #    Roda mesmo com o Quality Gate reprovado (é justamente quando mais importa).
+  # ----------------------------------------------------------------------------
+  metricas:
+    name: "9. 📊 Métricas DevSecOps (achados + DORA)"
+    needs: quality-gate
+    if: ${{ !cancelled() && github.event.inputs.acao_gcp != 'destroy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Baixar o resumo do Quality Gate"
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: resumo-quality-gate
+          path: resumo
+
+      - name: "Calcular e publicar as métricas no resumo da execução"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 "${AULA05_DIR}/metricas/metricas.py" \
+            --resumo resumo/resumo-quality-gate.json \
+            --saida metricas-devsecops.json
+
+      - name: "Guardar métricas (JSON)"
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: metricas-devsecops
+          path: metricas-devsecops.json
 
   # ----------------------------------------------------------------------------
   # 6. DEPLOY EFÊMERO (staging no próprio runner) + DAST com OWASP ZAP
@@ -513,7 +647,12 @@ jobs:
   deploy-gcp:
     name: "8. Deploy GCP (Terraform ${{ github.event.inputs.acao_gcp }})"
     needs: [dast, publicar-imagem]   # só implanta depois que a imagem aprovada foi publicada no GHCR
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.acao_gcp != 'nenhuma'
+    # Aula 05: no destroy os scanners são pulados; plan/apply exigem a imagem aprovada e publicada
+    if: >-
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch'
+          && github.event.inputs.alvo_gcp != 'gke'
+          && github.event.inputs.acao_gcp != 'nenhuma'
+          && (github.event.inputs.acao_gcp == 'destroy' || needs.publicar-imagem.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: producao-gcp
@@ -566,3 +705,272 @@ jobs:
           URL="$(terraform output -raw juice_shop_url)"
           echo "### 🧃 Juice Shop no GCP: ${URL}" >> "$GITHUB_STEP_SUMMARY"
           echo "(aguarde ~2 minutos para o startup-script instalar o Docker e subir o container)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ----------------------------------------------------------------------------
+  # 8b. DEPLOY NO GKE AUTOPILOT (Aula 05) - Terraform cria o cluster, kubectl
+  #     aplica o MESMO manifesto que o Conftest validou (05-compliance-metricas/k8s)
+  #     Run workflow com alvo_gcp = gke. Pré-requisitos além dos do job 8:
+  #       API container.googleapis.com ativa e, na SA de deploy, os papéis
+  #       roles/container.admin e roles/iam.serviceAccountUser (na SA padrão do Compute)
+  # ----------------------------------------------------------------------------
+  deploy-gke:
+    name: "8b. Deploy GKE Autopilot (${{ github.event.inputs.acao_gcp }})"
+    needs: [dast, publicar-imagem]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch'
+          && github.event.inputs.alvo_gcp == 'gke'
+          && github.event.inputs.acao_gcp != 'nenhuma'
+          && (github.event.inputs.acao_gcp == 'destroy' || needs.publicar-imagem.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: producao-gcp
+    defaults:
+      run:
+        working-directory: ${{ env.LAB_DIR }}/infra-gke
+    env:
+      ACAO: ${{ github.event.inputs.acao_gcp }}
+      TF_IN_AUTOMATION: "true"
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      ALLOWED_CIDR: ${{ vars.GCP_ALLOWED_CIDR }}
+      # A MESMA imagem aprovada pelos Quality Gates (commit), nunca "latest"
+      IMAGEM: ${{ format('ghcr.io/{0}/juice-shop-lab:{1}', vars.GHCR_OWNER, github.sha) }}
+      NS: juice-shop
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "Conferir variáveis obrigatórias"
+        run: |
+          faltando=""
+          for v in TF_STATE_BUCKET TF_VAR_project_id ALLOWED_CIDR; do
+            [ -n "${!v}" ] || faltando="${faltando} ${v}"
+          done
+          if [ "${ACAO}" != "destroy" ] && [[ "${IMAGEM}" == ghcr.io//* ]]; then faltando="${faltando} GHCR_OWNER"; fi
+          if [ -n "${faltando}" ]; then echo "::error::Configure em Settings > Variables:${faltando}"; exit 1; fi
+          echo "Imagem: ${IMAGEM}"
+
+      - name: "Autenticar no Google Cloud"
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: "Ferramentas: gcloud, gke-gcloud-auth-plugin e kubectl"
+        run: |
+          if ! command -v gcloud >/dev/null || ! command -v gke-gcloud-auth-plugin >/dev/null; then
+            if ! apt-cache policy google-cloud-cli | grep -q packages.cloud.google.com; then
+              curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor --yes -o /usr/share/keyrings/cloud.google.gpg
+              echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | \
+                sudo tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+            fi
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin kubectl
+          fi
+          gcloud --version | head -1
+          gke-gcloud-auth-plugin --version | head -1
+          kubectl version --client | head -1
+
+      - name: "Configurar Terraform"
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
+
+      - name: "terraform init (estado remoto no GCS, prefixo próprio do GKE)"
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=juice-shop/tsc31262r-gke"
+
+      - name: "Destroy: remover a aplicação antes do cluster (libera o Load Balancer)"
+        if: env.ACAO == 'destroy'
+        run: |
+          NOME="$(terraform output -raw cluster_name 2>/dev/null || true)"
+          LOCAL="$(terraform output -raw cluster_location 2>/dev/null || true)"
+          if [ -n "${NOME}" ] && gcloud container clusters get-credentials "${NOME}" --region "${LOCAL}" --project "${TF_VAR_project_id}"; then
+            kubectl delete namespace "${NS}" --ignore-not-found --wait=true --timeout=5m || true
+          else
+            echo "Cluster não encontrado no estado; seguindo para o destroy."
+          fi
+
+      - name: "terraform plan"
+        run: |
+          if [ "${ACAO}" = "destroy" ]; then
+            terraform plan -destroy -input=false -out=tfplan
+          else
+            terraform plan -input=false -out=tfplan
+          fi
+
+      - name: "terraform apply (cria o cluster Autopilot: ~10 minutos na primeira vez)"
+        if: env.ACAO == 'apply' || env.ACAO == 'destroy'
+        run: terraform apply -input=false tfplan
+
+      - name: "Credenciais do cluster (kubectl)"
+        if: env.ACAO == 'apply'
+        run: |
+          gcloud container clusters get-credentials "$(terraform output -raw cluster_name)" \
+            --region "$(terraform output -raw cluster_location)" --project "${TF_VAR_project_id}"
+          kubectl get nodes -o wide || true   # no Autopilot os nós aparecem só quando há Pods
+
+      - name: "kubectl apply do manifesto validado pelo Conftest"
+        if: env.ACAO == 'apply'
+        working-directory: .
+        run: |
+          sed -e "s#image: ghcr.io/OWNER/juice-shop-lab:COMMIT_SHA#image: ${IMAGEM}#" \
+              -e "s#__ALLOWED_CIDR__#${ALLOWED_CIDR}#" \
+              "${AULA05_DIR}/k8s/juice-shop.yaml" > juice-shop-render.yaml
+          grep -nE "image:|/32|/[0-9]+$" juice-shop-render.yaml || true
+          kubectl apply -f juice-shop-render.yaml
+          kubectl -n "${NS}" rollout status deployment/juice-shop --timeout=15m
+
+      - name: "Defesa em profundidade: o cluster recusa um Pod privilegiado (PSA + Autopilot)"
+        if: env.ACAO == 'apply'
+        run: |
+          cat > /tmp/pod-privilegiado.yaml <<'YAML'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: demo-pod-privilegiado
+            namespace: juice-shop
+          spec:
+            containers:
+              - name: atacante
+                image: busybox:1.37
+                securityContext:
+                  privileged: true
+          YAML
+          if kubectl apply --dry-run=server -f /tmp/pod-privilegiado.yaml 2> /tmp/recusa.txt; then
+            echo "::warning::O cluster ACEITOU o Pod privilegiado (verifique o PSA)"
+          else
+            echo "✅ Recusado pelo cluster:"; cat /tmp/recusa.txt
+          fi
+
+      - name: "Aguardar o IP do Load Balancer e publicar a URL"
+        if: env.ACAO == 'apply'
+        run: |
+          IP=""
+          for _ in $(seq 1 40); do
+            IP="$(kubectl -n "${NS}" get service juice-shop -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+            [ -n "${IP}" ] && break
+            sleep 10
+          done
+          kubectl -n "${NS}" get pods,service,networkpolicy -o wide
+          if [ -z "${IP}" ]; then echo "::warning::Load Balancer ainda sem IP; confira com kubectl get svc -n ${NS}"; exit 0; fi
+          {
+            echo "### ☸️ Juice Shop no GKE Autopilot: http://${IP}"
+            echo ""
+            echo "Acesso liberado somente para \`${ALLOWED_CIDR}\` (loadBalancerSourceRanges)."
+            echo "Imagem: \`${IMAGEM}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ----------------------------------------------------------------------------
+  # 10. 🔐 COFRE DE SEGREDOS (Aula 05) - demonstração com HashiCorp Vault efêmero
+  #     Opcional (workflow_dispatch com demo_cofre = true) e independente da esteira.
+  #     O Vault sobe em modo DEV dentro do runner e morre no fim do job: serve para
+  #     mostrar o CICLO DE VIDA do segredo, não para guardar segredo de verdade.
+  #       1. Segurança grava o segredo no cofre (nunca no código, no .env ou no tfvars)
+  #       2. A aplicação recebe uma identidade com política de SÓ LEITURA e prazo (TTL)
+  #       3. A aplicação lê o segredo em tempo de execução
+  #       4. Menor privilégio: não consegue gravar nem ler segredo de outro sistema
+  #       5. Rotação: nova versão do segredo, sem mudar código
+  #       6. Revogação: a credencial da aplicação deixa de funcionar na hora
+  #       7. Auditoria: toda leitura fica registrada (Repúdio do STRIDE)
+  # ----------------------------------------------------------------------------
+  cofre:
+    name: "10. 🔐 Cofre de segredos (demo Vault)"
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.demo_cofre == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      vault:
+        image: hashicorp/vault:1.20
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: dev-efemero-${{ github.run_id }}
+          VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+        ports:
+          - 8200:8200
+        options: --cap-add=IPC_LOCK
+    env:
+      VAULT_ADDR: http://127.0.0.1:8200
+      ROOT_TOKEN: dev-efemero-${{ github.run_id }}
+    steps:
+      - name: "0. Aguardar o cofre ficar pronto"
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS "${VAULT_ADDR}/v1/sys/health" > /dev/null; then echo "✅ Vault no ar"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::Vault não respondeu"; exit 1
+
+      - name: "1. Equipe de segurança grava o segredo e liga a auditoria"
+        run: |
+          H="X-Vault-Token: ${ROOT_TOKEN}"
+          curl -fsS -H "$H" -X PUT "${VAULT_ADDR}/v1/sys/audit/stdout" \
+            -d '{"type":"file","options":{"file_path":"stdout"}}'
+          SEGREDO="$(openssl rand -hex 32)"
+          echo "::add-mask::${SEGREDO}"
+          jq -n --arg v "$SEGREDO" '{data:{jwt_key:$v}}' | \
+            curl -fsS -H "$H" -X POST "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt" -d @- > /dev/null
+          jq -n '{data:{senha_banco:"nao-e-da-sua-conta"}}' | \
+            curl -fsS -H "$H" -X POST "${VAULT_ADDR}/v1/secret/data/financeiro/banco" -d @- > /dev/null
+          echo "Segredo gravado em secret/juice-shop/jwt (versão 1). Valor NUNCA aparece no log."
+
+      - name: "2. Política de menor privilégio + identidade da aplicação com prazo"
+        run: |
+          H="X-Vault-Token: ${ROOT_TOKEN}"
+          POLITICA='path "secret/data/juice-shop/*" { capabilities = ["read"] }'
+          jq -n --arg p "$POLITICA" '{policy:$p}' | \
+            curl -fsS -H "$H" -X PUT "${VAULT_ADDR}/v1/sys/policies/acl/juice-shop-leitura" -d @-
+          APP_TOKEN="$(curl -fsS -H "$H" -X POST "${VAULT_ADDR}/v1/auth/token/create" \
+            -d '{"policies":["juice-shop-leitura"],"ttl":"10m","no_default_policy":true}' | jq -r .auth.client_token)"
+          echo "::add-mask::${APP_TOKEN}"
+          echo "APP_TOKEN=${APP_TOKEN}" >> "$GITHUB_ENV"
+          echo "Política juice-shop-leitura: somente READ em secret/juice-shop/*  |  token da aplicação: TTL 10 min"
+
+      - name: "3. Aplicação lê o segredo em TEMPO DE EXECUÇÃO"
+        run: |
+          JWT_KEY="$(curl -fsS -H "X-Vault-Token: ${APP_TOKEN}" "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt" | jq -r .data.data.jwt_key)"
+          echo "::add-mask::${JWT_KEY}"
+          # A "aplicação" recebe o segredo só na memória do processo (nada em disco, nada no repositório)
+          JWT_KEY="$JWT_KEY" python3 -c "import os,hashlib; k=os.environ['JWT_KEY']; print(f'App iniciou com segredo de {len(k)} caracteres (sha256 {hashlib.sha256(k.encode()).hexdigest()[:8]}...)')"
+
+      - name: "4. Menor privilégio: gravar ou ler outro sistema deve ser NEGADO (403)"
+        run: |
+          H="X-Vault-Token: ${APP_TOKEN}"
+          C1=$(curl -s -o /dev/null -w '%{http_code}' -H "$H" -X POST "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt" -d '{"data":{"jwt_key":"hack"}}')
+          C2=$(curl -s -o /dev/null -w '%{http_code}' -H "$H" "${VAULT_ADDR}/v1/secret/data/financeiro/banco")
+          echo "Gravar o próprio segredo: HTTP ${C1}  |  Ler segredo do financeiro: HTTP ${C2}"
+          if [ "$C1" = "403" ] && [ "$C2" = "403" ]; then echo "✅ Menor privilégio funcionando"; else echo "::error::Esperado 403"; exit 1; fi
+
+      - name: "5. Rotação: nova versão do segredo, sem mudar uma linha de código"
+        run: |
+          NOVO="$(openssl rand -hex 32)"; echo "::add-mask::${NOVO}"
+          jq -n --arg v "$NOVO" '{data:{jwt_key:$v}}' | \
+            curl -fsS -H "X-Vault-Token: ${ROOT_TOKEN}" -X POST "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt" -d @- > /dev/null
+          V=$(curl -fsS -H "X-Vault-Token: ${APP_TOKEN}" "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt" | jq -r .data.metadata.version)
+          echo "A aplicação agora lê a versão ${V} do segredo (a versão 1 continua no histórico do cofre)."
+
+      - name: "6. Revogação: a credencial vazou? Revoga e ela morre na hora"
+        run: |
+          curl -fsS -H "X-Vault-Token: ${APP_TOKEN}" -X POST "${VAULT_ADDR}/v1/auth/token/revoke-self"
+          C=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Vault-Token: ${APP_TOKEN}" "${VAULT_ADDR}/v1/secret/data/juice-shop/jwt")
+          echo "Leitura com o token revogado: HTTP ${C}"
+          if [ "$C" = "403" ]; then echo "✅ Token revogado não acessa mais nada"; else echo "::error::Esperado 403"; exit 1; fi
+
+      - name: "7. Auditoria: quem leu o quê e quando (sem expor o valor)"
+        run: |
+          docker logs "${{ job.services.vault.id }}" 2>/dev/null | grep '"type":"response"' | \
+            jq -rc 'select(.request.path|test("secret/data")) | [.time, .request.operation, .request.path, (.response.data.error // .error // "ok")] | @tsv' 2>/dev/null | tail -10 || true
+          {
+            echo "### 🔐 Cofre de segredos - demonstração"
+            echo ""
+            echo "| Etapa | Resultado |"
+            echo "|---|---|"
+            echo "| Segredo gravado no cofre (nunca no código) | ✅ |"
+            echo "| Aplicação leu em tempo de execução, com token de só leitura e TTL | ✅ |"
+            echo "| Tentativa de gravar / ler outro sistema | ⛔ 403 (menor privilégio) |"
+            echo "| Rotação para a versão 2 sem mudar código | ✅ |"
+            echo "| Token revogado | ⛔ 403 imediato |"
+            echo "| Auditoria das leituras | ✅ (log do Vault, valores em HMAC) |"
+            echo ""
+            echo "Em produção: GCP Secret Manager / AWS Secrets Manager / Azure Key Vault / Vault em cluster, com a VM ou o Pod se autenticando pela própria identidade (sem token fixo)."
+          } >> "$GITHUB_STEP_SUMMARY"
