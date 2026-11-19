@@ -101,6 +101,22 @@ deny contains msg if {
 	msg := sprintf("IPOG-K8S-008: Service %s aceita 0.0.0.0/0.", [input.metadata.name])
 }
 
+# IPOG-K8S-010: HPA com teto de réplicas e métrica definida (controle de custo:
+# no GKE Autopilot cada Pod é cobrado pelo que pede)
+max_replicas_empresa := 5
+
+deny contains msg if {
+	input.kind == "HorizontalPodAutoscaler"
+	input.spec.maxReplicas > max_replicas_empresa
+	msg := sprintf("IPOG-K8S-010: HPA %s permite %d réplicas (máximo da empresa: %d).", [input.metadata.name, input.spec.maxReplicas, max_replicas_empresa])
+}
+
+deny contains msg if {
+	input.kind == "HorizontalPodAutoscaler"
+	count(object.get(input.spec, "metrics", [])) == 0
+	msg := sprintf("IPOG-K8S-010: HPA %s sem métrica de escala definida.", [input.metadata.name])
+}
+
 # Alertas
 warn contains msg if {
 	some c in containers

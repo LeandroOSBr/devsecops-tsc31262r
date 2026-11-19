@@ -1061,13 +1061,15 @@ jobs:
             [ -n "${IP}" ] && break
             sleep 10
           done
-          kubectl -n "${NS}" get pods,service,networkpolicy -o wide
+          kubectl -n "${NS}" get pods,service,networkpolicy,hpa -o wide
           if [ -z "${IP}" ]; then echo "::warning::Load Balancer ainda sem IP; confira com kubectl get svc -n ${NS}"; exit 0; fi
           {
             echo "### ☸️ Juice Shop no GKE Autopilot: http://${IP}"
             echo ""
             echo "Acesso liberado somente para \`${ALLOWED_CIDR}\` (loadBalancerSourceRanges)."
             echo "Imagem: \`${IMAGEM}\`"
+            echo ""
+            echo "Escala automática (HPA): $(kubectl -n "${NS}" get hpa juice-shop -o jsonpath='{.spec.minReplicas} a {.spec.maxReplicas} Pods, alvo {.spec.metrics[0].resource.target.averageUtilization}% de CPU')"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ----------------------------------------------------------------------------

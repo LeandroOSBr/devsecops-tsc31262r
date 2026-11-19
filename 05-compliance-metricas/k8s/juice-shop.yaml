@@ -29,7 +29,8 @@ metadata:
   labels:
     app: juice-shop
 spec:
-  replicas: 1 # SQLite local do Juice Shop: 1 réplica mantém login e carrinho consistentes
+  # Sem "replicas": quem decide o número de Pods é o HPA (abaixo). Se o campo
+  # ficasse aqui, cada kubectl apply voltaria o Deployment para 1 réplica.
   selector:
     matchLabels:
       app: juice-shop
@@ -84,9 +85,39 @@ spec:
     - __ALLOWED_CIDR__
   selector:
     app: juice-shop
+  # Com mais de uma réplica, cada Pod tem o seu próprio SQLite: a afinidade por IP
+  # mantém o mesmo aluno no mesmo Pod (login e carrinho continuam consistentes)
+  sessionAffinity: ClientIP
   ports:
     - port: 80
       targetPort: 3000
+---
+# Escala horizontal: de 1 a 3 Pods conforme o uso de CPU.
+# A porcentagem é sobre o REQUEST do container (500m): 70% = 350m em média.
+# No Autopilot cada Pod novo é cobrado pelo que pede (500m e 1Gi), daí o teto
+# baixo (a política IPOG-K8S-010 barra mais de 5 réplicas).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: juice-shop
+  namespace: juice-shop
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: juice-shop
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300 # espera 5 min de CPU baixa antes de remover Pods
 ---
 # Negar tudo por padrão (entrada e saída) no namespace...
 apiVersion: networking.k8s.io/v1
